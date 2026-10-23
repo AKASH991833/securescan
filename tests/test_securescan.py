@@ -677,3 +677,92 @@ def test_demo_seed_only_local(tmp_path, monkeypatch):
     from securescan.webapp import create_app
     app = create_app(str(tmp_path / "d2.db"))
     assert app.test_client().get("/__demo__/enter/job/x").status_code == 404
+
+
+# ---- in-process TLS subset (pinned transport) ----
+import socket as _socket, ssl as _ssl, threading as _threading, subprocess as _subprocess
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class _TlsHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"<html><head><title>t</title></head><body>ok</body></html>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+
+class _HttpsFixture:
+    def __init__(self, tmp_path):
+        cert, key = str(tmp_path / "cert.pem"), str(tmp_path / "key.pem")
+        _subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", key,
+             "-out", cert, "-days", "3650", "-nodes", "-subj", "/CN=localhost",
+             "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+            check=True, capture_output=True)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _TlsHandler)
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)
+        self.port = self.server.server_address[1]
+        self.thread = _threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+    def stop(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+@pytest.fixture()
+def https_fixture(tmp_path):
+    fx = _HttpsFixture(tmp_path)
+    yield fx
+    fx.stop()
+
+def _tls_check_only(url, store, **kw):
+    from securescan.scope import ScopeGuard
+    from securescan.client import SafeClient
+    from securescan.orchestrator import ScanContext
+    from securescan.checks import REGISTRY
+    guard = ScopeGuard(url, allow_private=True)
+    ctx = ScanContext(guard, SafeClient(guard))
+    return REGISTRY["tls-certificate"].fn(ctx)
+
+def test_tls_selfsigned_validation_failure(https_fixture, store):
+    findings = _tls_check_only(f"https://127.0.0.1:{https_fixture.port}", store)
+    assert any(f.status == "confirmed" and "validation failed" in f.description.lower()
+               for f in findings), [f.description for f in findings]
+
+def test_tls_check_never_resolves_dns(https_fixture, store, monkeypatch):
+    """The check must connect ONLY to guard-validated IP literals, never to a
+    hostname (no DNS rebypass like the old unpinned implementation)."""
+    from securescan import scope as scope_mod
+    monkeypatch.setattr(scope_mod, "resolve_host", lambda host: ["127.0.0.1"])
+    targets = []
+    real_connect = _socket.create_connection
+    def recording_connect(address, *a, **k):
+        targets.append(address[0])
+        return real_connect(address, *a, **k)
+    monkeypatch.setattr("securescan.checks.builtin.socket.create_connection", recording_connect)
+    _tls_check_only(f"https://localhost:{https_fixture.port}", store)
+    assert targets, "check made no connections"
+    assert all(t == "127.0.0.1" for t in targets), targets
+
+def test_tls_no_deprecated_protocols_on_modern_server(https_fixture, store):
+    findings = _tls_check_only(f"https://127.0.0.1:{https_fixture.port}", store)
+    assert not any("deprecated" in f.description.lower() for f in findings), \
+        [f.description for f in findings]
+
+def test_tls_success_path_with_trusted_cert(https_fixture, store, monkeypatch):
+    """When the chain verifies, the check reports negotiated protocol+cipher."""
+    import securescan.checks.builtin as builtin_mod
+    original_factory = _ssl.create_default_context
+    pem = _ssl.get_server_certificate(("127.0.0.1", https_fixture.port))
+    def trusted_context():
+        c = original_factory()
+        c.load_verify_locations(cadata=pem)
+        return c
+    monkeypatch.setattr(builtin_mod.ssl, "create_default_context", trusted_context)
+    findings = _tls_check_only(f"https://localhost:{https_fixture.port}", store)
+    assert any("certificate valid" in f.description.lower() and "negotiated" in f.description.lower()
+               for f in findings), [f.description for f in findings]

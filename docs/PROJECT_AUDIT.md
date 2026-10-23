@@ -29,9 +29,9 @@ that preserves the concept's visual direction (dark console, English UI).
 | Explainer | COMPLETE (not AI) | deterministic templates, labeled not-AI |
 | Web UI (dark console) | COMPLETE (local prototype) | ownership gate enforced before scan |
 | CLI | COMPLETE | |
-| Test suite | COMPLETE | 55 tests, all passing |
+| Test suite | COMPLETE | 59 tests, all passing (incl. HTTPS fixture + TLS pinning tests) |
 | Auth + tenant isolation | COMPLETE (local) | argon2id, labeled forms, CSRF on every POST (login/register/logout/scan/verify/cancel), login throttling (5 fails/10min -> 5min lockout), session-fixation defense (fresh session pre-auth), server-side logout invalidation (session_version), org join-by-name impossible (always new org id), tenant-scoped challenges/jobs/scans/reports, cross-tenant 404s |
 | Background queue + cancellation | COMPLETE (in-process) | thread-based JobManager, cancel honored between checks, tenant-scoped job progress page with real status (meta-refresh, no fake percentages) and cancel button |
-| Scanner integrations | BLOCKED (by design) | testssl.sh installed but DISABLED: subprocess does its own DNS/networking outside the pinned transport; stays unavailable until pinnable. No subprocess may bypass SSRF defenses |
+| Scanner integrations | BLOCKED (by design) | subprocess scanners DISABLED: they do their own DNS/networking outside the pinned transport. REPLACED IN PART Oct 23 2026: in-process TLS subset (certificate validity, negotiated protocol/cipher, deprecated TLS acceptance) over the same pinned per-connection transport - fixed a prior DNS-rebypass in tls-certificate, now covered by a pinning test |
 | AI provider abstraction | COMPLETE (real AI verified) | project-dedicated Gemini API key (free tier) held outside the repo; ExternalProvider verified Oct 23 2026 with one real redacted-finding call via gemini-3.1-flash-lite (1.1s, labeled output); template provider remains the no-key fallback |
 | GitHub publication | DONE | user-approved, code-only, sanitized: https://github.com/AKASH991833/securescan (no secrets/scan records/personal data) |

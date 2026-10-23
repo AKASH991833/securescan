@@ -45,17 +45,60 @@ def https_enforcement(ctx):
                       cwe="CWE-319", owasp="A02:2021"))
     return out
 
-def tls_certificate(ctx):
-    c, out = CHECK_BY_ID["tls-certificate"], []
-    host, port = ctx.guard.base_host, ctx.guard.base_port
+def _pinned_tls_connect(ctx, host, port, make_context):
+    """One TLS connection pinned to a guard-validated IP.
+
+    The ScopeGuard re-validates and returns ONLY the IPs it screened; the TCP
+    socket goes to that IP while SNI and certificate hostname verification use
+    the real hostname. No DNS resolution happens here (same invariant as
+    SafeClient); a subprocess-free replacement for what testssl would do
+    unpinned. Raises ScopeError if the (scheme, host, port) triple is outside
+    the approved scope.
+    """
+    _, ips = ctx.guard.check_url(f"https://{host}:{port}/")
+    raw = socket.create_connection((ips[0], port), timeout=10)
     try:
-        context = ssl.create_default_context()
-        with socket.create_connection((host, port), timeout=10) as sock:
-            with context.wrap_socket(sock, server_hostname=host) as ssock:
-                cert = ssock.getpeercert()
-                proto = ssock.version()
+        context = make_context()
+        return context.wrap_socket(raw, server_hostname=host)
+    except Exception:
+        raw.close()
+        raise
+
+def _deprecated_tls_accepted(ctx, host, port, version):
+    """True if the server completes a handshake at a deprecated TLS version.
+    Pinned to the validated IP exactly like the main handshake; verifies
+    protocol acceptance only (certificate checks are the main check's job)."""
+    def make():
+        c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        c.check_hostname = False
+        c.verify_mode = ssl.CERT_NONE
+        c.minimum_version = version
+        c.maximum_version = version
+        return c
+    try:
+        with _pinned_tls_connect(ctx, host, port, make):
+            return True
+    except Exception:
+        return False
+
+def tls_certificate(ctx):
+    """In-process TLS hygiene SUBSET (spec section 7B): certificate validity,
+    negotiated protocol/cipher, and deprecated-protocol acceptance. This is
+    NOT a full testssl-style enumeration; it replaces the disabled subprocess
+    adapter with checks that stay inside the pinned, scope-guarded transport."""
+    c, out = CHECK_BY_ID["tls-certificate"], []
+    host = ctx.guard.base_host
+    # For an https target use its port; for an http target probe the standard
+    # https port (the http->https upgrade triple the guard already permits).
+    port = ctx.guard.base_port if ctx.guard.base_scheme == "https" else 443
+    try:
+        with _pinned_tls_connect(ctx, host, port, ssl.create_default_context) as ssock:
+            cert = ssock.getpeercert()
+            proto = ssock.version()
+            cipher = ssock.cipher()
         exp = datetime.datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z")
         days = (exp - datetime.datetime.utcnow()).days
+        cipher_s = f"{cipher[0]} ({cipher[1]}, {cipher[2]} bits)" if cipher else "unknown"
         if days < 0:
             out.append(_f(c, "high", STATUS_CONFIRMED, "high", host,
                           description="TLS certificate is expired.",
@@ -69,7 +112,25 @@ def tls_certificate(ctx):
         else:
             out.append(_f(c, "info", "not-detected", "high", host,
                           description=f"Certificate valid ({days} days left), negotiated {proto}.",
-                          evidence=f"notAfter={cert['notAfter']}; protocol={proto}"))
+                          evidence=f"notAfter={cert['notAfter']}; protocol={proto}; cipher={cipher_s}"))
+        if proto and proto in ("TLSv1", "TLSv1.1"):
+            out.append(_f(c, "medium", STATUS_CONFIRMED, "high", host,
+                          description=f"Deprecated protocol negotiated: {proto}.",
+                          evidence=f"server selected {proto} on a modern-client handshake",
+                          impact="TLS 1.0/1.1 have known cryptographic weaknesses and are deprecated by major browsers.",
+                          remediation="Disable TLS 1.0/1.1; require TLS 1.2+ (prefer 1.3).",
+                          cwe="CWE-327"))
+        for ver, label in ((ssl.TLSVersion.TLSv1, "TLS 1.0"),
+                           (ssl.TLSVersion.TLSv1_1, "TLS 1.1")):
+            if proto and proto in ("TLSv1", "TLSv1.1") and label == {"TLSv1": "TLS 1.0", "TLSv1.1": "TLS 1.1"}[proto]:
+                continue  # already reported via negotiated version
+            if _deprecated_tls_accepted(ctx, host, port, ver):
+                out.append(_f(c, "medium", STATUS_CONFIRMED, "high", host,
+                              description=f"Server accepts deprecated {label} connections.",
+                              evidence=f"completed a pinned handshake forced to {label}",
+                              impact="Clients can be downgraded to a deprecated protocol version.",
+                              remediation=f"Disable {label}; require TLS 1.2+ (prefer 1.3).",
+                              cwe="CWE-327"))
     except ssl.SSLCertVerificationError as e:
         out.append(_f(c, "high", STATUS_CONFIRMED, "high", host,
                       description="TLS certificate validation failed.",
@@ -80,6 +141,11 @@ def tls_certificate(ctx):
                       description="TLS handshake could not be completed.",
                       evidence=f"{type(e).__name__}: {e}",
                       preconditions="TLS service reachable on the scanned port"))
+    except Exception as e:
+        out.append(_f(c, "info", STATUS_INCONCLUSIVE, "low", host,
+                      description="TLS check could not run within the approved scope.",
+                      evidence=f"{type(e).__name__}: {e}",
+                      preconditions="(scheme, host, port) inside approved scope"))
     return out
 
 SECURITY_HEADERS = [
@@ -340,7 +406,7 @@ def tech_fingerprint(ctx):
 
 CHECKS = [
     Check("https-enforcement", "HTTPS enforcement", "transport", https_enforcement),
-    Check("tls-certificate", "TLS certificate and protocol", "transport", tls_certificate),
+    Check("tls-certificate", "TLS certificate and protocol (in-process subset)", "transport", tls_certificate),
     Check("security-headers", "HTTP security headers", "http-browser", security_headers),
     Check("cookie-flags", "Cookie security flags", "http-browser", cookie_flags),
     Check("server-disclosure", "Server information disclosure", "http-browser", server_disclosure),
