@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS orgs (
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, username TEXT UNIQUE, pw_hash TEXT, org_id TEXT,
   session_version INTEGER DEFAULT 0, created_at REAL);
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY, org_id TEXT, target TEXT, profile INTEGER,
+  status TEXT, scan_id TEXT, error TEXT, created_at REAL, updated_at REAL);
 CREATE TABLE IF NOT EXISTS scans (
   id TEXT PRIMARY KEY, org_id TEXT, target TEXT, profile INTEGER, status TEXT,
   created_at REAL, finished_at REAL, error TEXT);
@@ -99,6 +102,40 @@ class Store:
             cov = [dict(r) for r in c.execute(
                 "SELECT * FROM coverage WHERE scan_id=?", (sid,))]
         return {"scan": dict(scan) if scan else None, "findings": findings, "coverage": cov}
+
+    def job_upsert(self, jid, org_id, target, profile, status, scan_id=None, error=None):
+        with self._conn() as c:
+            c.execute("""INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?)
+                         ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+                         scan_id=excluded.scan_id, error=excluded.error,
+                         updated_at=excluded.updated_at""",
+                      (jid, org_id, target, profile, status, scan_id, error,
+                       time.time(), time.time()))
+
+    def jobs_for_org(self, org_id):
+        with self._conn() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT * FROM jobs WHERE org_id=? ORDER BY created_at DESC LIMIT 50",
+                (org_id,))]
+
+    def interrupt_stale_jobs(self):
+        """On startup: queued/running jobs from a dead process are marked
+        interrupted - never silently lost, never shown as running."""
+        with self._conn() as c:
+            c.execute("UPDATE jobs SET status='interrupted', updated_at=? "
+                      "WHERE status IN ('queued','running')", (time.time(),))
+
+    def count_recent_scans(self, org_id, seconds):
+        with self._conn() as c:
+            return c.execute(
+                "SELECT COUNT(*) n FROM scans WHERE org_id=? AND created_at>?",
+                (org_id, time.time() - seconds)).fetchone()["n"]
+
+    def count_recent_orgs(self, seconds):
+        with self._conn() as c:
+            return c.execute(
+                "SELECT COUNT(*) n FROM orgs WHERE created_at>?",
+                (time.time() - seconds,)).fetchone()["n"]
 
     def latest_for_target(self, target, n=2):
         with self._conn() as c:

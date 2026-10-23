@@ -56,15 +56,35 @@ def resolve_host(host: str):
     return sorted({i[4][0] for i in infos})
 
 class ScopeGuard:
+    """Exact authorized scope: (scheme, host, port) triples. The approved
+    scope is the normalized target's triple plus any explicitly added triples.
+    Subdomains and sibling ports are NOT included unless explicitly approved.
+    An http->https upgrade redirect on the SAME host is permitted (standard
+    HTTPS enforcement), nothing else crosses scheme boundaries."""
+
     def __init__(self, target: str, extra_hosts=None, allow_private: bool=False,
                  max_redirects: int = 5):
         self.base = normalize_target(target)
         p = urlparse(self.base)
         self.base_host = p.hostname
         self.base_port = p.port
+        self.base_scheme = p.scheme
         self.allow_private = allow_private
         self.max_redirects = max_redirects
-        self.allowed_hosts = {self.base_host} | {h.lower() for h in (extra_hosts or [])}
+        self.allowed_triples = {(p.scheme, p.hostname, p.port)}
+        for h in (extra_hosts or []):
+            ep = urlparse(h if "://" in h else p.scheme + "://" + h)
+            port = ep.port or (443 if ep.scheme == "https" else 80)
+            self.allowed_triples.add((ep.scheme, (ep.hostname or "").lower(), port))
+
+    def _triple_allowed(self, scheme, host, port) -> bool:
+        if (scheme, host, port) in self.allowed_triples:
+            return True
+        # permit ONLY http->https upgrade on the same approved host
+        for (s, h, p) in self.allowed_triples:
+            if h == host and s == "http" and scheme == "https" and port == 443:
+                return True
+        return False
 
     def resolve_validated(self, host: str):
         """Resolve host and return ONLY validated IPs. Raises ScopeError."""
@@ -86,8 +106,10 @@ class ScopeGuard:
         host = (p.hostname or "").lower()
         if not host:
             raise ScopeError("empty host")
-        if host not in self.allowed_hosts and not host.endswith("." + self.base_host):
-            raise ScopeError(f"host {host!r} outside approved scope")
+        port = p.port or (443 if p.scheme == "https" else 80)
+        if not self._triple_allowed(p.scheme, host, port):
+            raise ScopeError(
+                f"(scheme={p.scheme}, host={host!r}, port={port}) outside approved scope")
         ips = self.resolve_validated(host)
         return abs_url, ips
 

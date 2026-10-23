@@ -192,6 +192,8 @@ def create_app(db_path="securescan.db", secret_key=None):
     verified_hosts = {}   # (org_id, host) -> expiry timestamp
     login_failures = {}   # username -> [timestamps] (brute-force throttling)
     MAX_FAILS, WINDOW, LOCKOUT = 5, 600, 300
+    SCANS_PER_ORG_PER_HOUR = 10
+    REGISTRATIONS_PER_HOUR = 20   # per deploy instance (abuse ceiling)
 
     def csrf_token():
         if "csrf" not in session:
@@ -235,6 +237,10 @@ def create_app(db_path="securescan.db", secret_key=None):
     def register():
         if not csrf_ok():
             abort(400, "bad CSRF token")
+        if store.count_recent_orgs(3600) >= REGISTRATIONS_PER_HOUR:
+            return render_template_string(AUTH_TEMPLATE, mode="Register",
+                                          auth_error="registration temporarily limited - try later",
+                                          csrf=csrf_token()), 429
         uname = request.form.get("username", "").strip()
         pw = request.form.get("password", "")
         org = request.form.get("org", "").strip()
@@ -358,7 +364,12 @@ def create_app(db_path="securescan.db", secret_key=None):
             abort(400, f"target rejected: {e}")
         if verified_hosts.get((org_id, host), 0) < _time.time():
             return _render_challenge(challenges.create(host, org_id), target, profile, org_id=org_id)
-        jid = jobs.submit(target, profile, org_id=org_id)
+        if store.count_recent_scans(org_id, 3600) >= SCANS_PER_ORG_PER_HOUR:
+            abort(429, "org scan budget for this hour is exhausted")
+        try:
+            jid = jobs.submit(target, profile, org_id=org_id)
+        except RuntimeError as e:
+            abort(429, str(e))
         return redirect(f"/job/{jid}")
 
     @app.post("/verify-and-scan")
@@ -388,7 +399,12 @@ def create_app(db_path="securescan.db", secret_key=None):
                                      verify_error=err or "token not found at the challenge path",
                                      org_id=org_id)
         verified_hosts[(org_id, host)] = _time.time() + 3600
-        jid = jobs.submit(target, profile, org_id=org_id)
+        if store.count_recent_scans(org_id, 3600) >= SCANS_PER_ORG_PER_HOUR:
+            abort(429, "org scan budget for this hour is exhausted")
+        try:
+            jid = jobs.submit(target, profile, org_id=org_id)
+        except RuntimeError as e:
+            abort(429, str(e))
         return redirect(f"/job/{jid}")
 
     @app.get("/job/<jid>")
@@ -411,6 +427,54 @@ def create_app(db_path="securescan.db", secret_key=None):
             abort(404)
         jobs.cancel(jid)
         return redirect(f"/job/{jid}")
+
+    if os.environ.get("SECURESCAN_DEMO") == "1" and deploy == "local":
+        # LOCAL DEMO SEED ONLY: seeded tenant + synthetic findings so UI states
+        # (job progress, retest comparison) can be visually verified. Never
+        # enabled in shared deploys; no network targets involved.
+        from .findings import Finding as _F
+        if not store.get_user("demo"):
+            _oid = store.create_org("DemoOrg")
+            store.create_user("demo", ph.hash("demo12345"), _oid)
+            s1 = store.create_scan("https://demo.example", 2, _oid)
+            for f in [_F(check_id="security-headers", title="HTTP security headers",
+                         category="http-browser", severity="medium", status="potential",
+                         confidence="medium", asset="https://demo.example/", kind="hardening",
+                         description="Content-Security-Policy is not set.",
+                         remediation="Set a suitable CSP."),
+                      _F(check_id="exposed-files", title="Active probe: sensitive file paths",
+                         category="attack-surface", severity="high", status="confirmed",
+                         confidence="medium", asset="https://demo.example/.git/HEAD",
+                         description="Git repository metadata appears publicly accessible.",
+                         evidence="GET /.git/HEAD -> 200, pattern matched",
+                         remediation="Block .git from the web root.")]:
+                store.save_finding(s1, f)
+            store.save_coverage(s1, [("security-headers", "completed", "1 record"),
+                                     ("active-tests-nuclei-zap", "not-tested", "binaries absent")])
+            store.finish_scan(s1, "complete")
+            s2 = store.create_scan("https://demo.example", 2, _oid)
+            store.save_finding(s2, _F(check_id="security-headers", title="HTTP security headers",
+                         category="http-browser", severity="medium", status="potential",
+                         confidence="medium", asset="https://demo.example/", kind="hardening",
+                         description="Content-Security-Policy is not set.",
+                         remediation="Set a suitable CSP."))
+            store.save_coverage(s2, [("security-headers", "completed", "1 record")])
+            store.finish_scan(s2, "complete")
+            import threading as _th, time as _t, uuid as _u
+            _jid = "job-" + _u.uuid4().hex[:10]
+            jobs.jobs[_jid] = {"id": _jid, "target": "https://demo.example",
+                "profile": 2, "org_id": _oid, "status": "running",
+                "scan_id": None, "cancel": _th.Event(), "created": _t.time(),
+                "error": None}  # static demo job, no worker thread
+            store.job_upsert(_jid, _oid, "https://demo.example", 2, "running")
+
+        @app.get("/__demo__/enter/<path:nxt>")
+        def demo_enter(nxt):
+            session.clear()
+            session["user"] = "demo"
+            session["sv"] = 0
+            session["csrf"] = secrets.token_hex(16)
+            return redirect("/" + nxt)
 
     @app.get("/scan/<sid>")
     @login_required
