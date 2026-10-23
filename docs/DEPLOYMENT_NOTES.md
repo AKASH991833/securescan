@@ -30,3 +30,20 @@
 A free hosted deployment is possible via Render free tier with real
 limitations (cold starts, ephemeral DB, not-for-production terms). The safe
 local prototype remains the primary verified artifact until Akash chooses.
+
+## Persistent free DB research (2026-10-23)
+
+- **Turso** (turso.tech/pricing): free tier, "no credit card required", and it
+  IS SQLite-compatible - matches the current storage layer with the least
+  migration. This makes a Render-free-web-service + Turso combination the
+  only verified no-card hosted path found so far: durable DB survives
+  Render's ephemeral disk, unrestricted egress for scanning stays on Render.
+  Real limits remain: cold starts, Render's not-for-production terms, Turso
+  free quotas. NOT provisioned - deploying the unfinished scanner publicly is
+  deliberately out of scope.
+- **Supabase free**: Postgres, pauses projects after 7 days of low activity
+  (supabase.com/docs/guides/platform/free-project-pausing); would require
+  porting the storage layer off SQLite.
+- Job queue on a hosted deploy: durable job records already survive restarts
+  (interrupted-marking), so Render restarts lose only in-flight progress, not
+  history. A multi-worker Redis/Celery setup stays a later decision.
