@@ -1,8 +1,10 @@
 # SecureScan (local prototype)
 
 Authorized-use website security assessment platform. Profile 1 (external
-passive audit) implemented; profiles 2-5 registered as unavailable with honest
-reasons. Only scan systems you own or are explicitly authorized to test.
+passive audit) and a profile-2 subset (same-origin crawl + labeled active
+path probes) are implemented; profiles 3-5 stay registered as unavailable
+with honest reasons. Multi-tenant auth, ownership verification, background
+jobs with cancellation, retest comparison, JSON/PDF reports. 55 tests. Only scan systems you own or are explicitly authorized to test.
 
 ## Run
     pip install flask pytest          # user site
