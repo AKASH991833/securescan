@@ -8,9 +8,9 @@ that preserves the concept's visual direction (dark console, English UI).
 
 ## Environment
 - Python 3.10, Flask 3.1 (user-site), SQLite 3.37, requests, reportlab, pytest 9.
-- NO scanner binaries: zap, nuclei, nikto, nmap, wpscan, trivy, syft, grype,
-  semgrep, gitleaks, testssl.sh, playwright - all absent, detected at runtime
-  and reported, never faked.
+- Scanner binaries absent except testssl.sh (user-space, free) - which is
+  installed but deliberately DISABLED because subprocess networking would
+  bypass the pinned transport. All others absent, detected, reported, never faked.
 - No external AI key available (free tiers need user signup).
 
 ## Implementation matrix
@@ -28,9 +28,9 @@ that preserves the concept's visual direction (dark console, English UI).
 | Explainer | COMPLETE (not AI) | deterministic templates, labeled not-AI |
 | Web UI (dark console) | COMPLETE (local prototype) | ownership gate enforced before scan |
 | CLI | COMPLETE | |
-| Test suite | COMPLETE | 28 tests, all passing |
+| Test suite | COMPLETE | 31 tests, all passing |
 | Auth/multi-user/tenancy | MISSING | needs real deployment decisions |
-| Background queue (Celery/Redis) | MISSING | scans run synchronously; single-user local prototype |
-| Scanner integrations | PARTIAL | testssl.sh installed user-space (free) + real adapter; other binaries absent, reported not faked |
+| Background queue + cancellation | COMPLETE (in-process) | thread-based JobManager, cancel events honored between checks; Redis/Celery only needed for multi-worker deployment |
+| Scanner integrations | BLOCKED (by design) | testssl.sh installed but DISABLED: subprocess does its own DNS/networking outside the pinned transport; stays unavailable until pinnable. No subprocess may bypass SSRF defenses |
 | AI provider abstraction | COMPLETE (keyless) | provider interface + template provider active; external provider activates on SECURESCAN_AI_KEY; actual AI still unavailable without user's key |
 | GitHub publication | NOT DONE | requires explicit user grant + sanitization review |

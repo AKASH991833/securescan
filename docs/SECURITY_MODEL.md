@@ -7,10 +7,13 @@
   supported when a resolver tool exists). Verification grants a 1-hour window.
 - Scope enforcement: every request and every redirect hop is revalidated
   (scheme, host allowlist, fresh DNS resolution + IP screening). The socket
-  connection is then PINNED to the exact validated IPs (patched resolver for
-  the connect only) while Host header, TLS SNI and certificate verification
-  keep the real hostname - a DNS change between validation and connect
-  (rebinding) cannot redirect traffic. Localhost, private, link-local,
+  connection is then PINNED to the exact validated IP: the client opens the
+  TCP socket to that IP itself (stdlib http.client), while Host header, TLS
+  SNI and certificate verification use the real hostname. No DNS resolution
+  happens after validation and there is NO global resolver patching, so
+  concurrent jobs cannot race. Subprocess scanners (testssl.sh) do their own
+  DNS and are therefore DISABLED until they can run pinned - no subprocess may
+  bypass the guarded transport. Localhost, private, link-local,
   reserved, multicast and cloud-metadata IPs are rejected; metadata IPs are
   rejected even in the test-harness private mode.
 - Test-only private allowance: `allow_private` exists only on the

@@ -46,7 +46,7 @@ a{color:#58a6ff} pre{white-space:pre-wrap;font-size:.75rem;color:#9fb8a4;margin:
 }
 </style></head><body>
 <h1>SECURESCAN</h1>
-<span class="demo">LOCAL PROTOTYPE - profile 1 (passive) + profile 2 subset (crawl, path probes, testssl) implemented; profiles 3-5 unavailable</span>
+<span class="demo">LOCAL PROTOTYPE - profile 1 (passive) + profile 2 subset (crawl, path probes) implemented; testssl adapter DISABLED (subprocess would bypass SSRF guard); profiles 3-5 unavailable</span>
 <div class="panel">
 <form method="post" action="/scan" class="scanform">
 <input name="target" size="42" placeholder="https://site-you-own.example" required>
