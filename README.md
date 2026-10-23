@@ -31,4 +31,6 @@ The web UI cannot scan private/localhost addresses.
 ## Known limits
 Local prototype: SQLite storage, in-process queue (durable records, jobs from a
 dead process marked interrupted), profiles 3-5 unavailable, active scanner
-integrations unavailable (subprocess pinning rule), AI needs user's own key.
+integrations unavailable (subprocess pinning rule). AI explainer verified with a
+project-dedicated Gemini key (free tier, stored outside the repo); without
+SECURESCAN_AI_KEY it falls back to a labeled local template (not AI).

@@ -1,6 +1,6 @@
 # Roadmap (priority order)
 
-DONE: AI provider abstraction (keyless; activates on SECURESCAN_AI_KEY).
+DONE: AI provider abstraction - REAL AI VERIFIED Oct 23 2026: project-dedicated Gemini key (free tier, vault-stored), one real redacted-finding call through gemini-3.1-flash-lite; template fallback when SECURESCAN_AI_KEY unset.
 DONE: Crawler + profile 2 subset (same-origin GET-only crawl, per-page checks).
 DONE: First real scanner adapter (testssl.sh, user-space free install).
 DONE: Background job queue + cancellation (in-process JobManager).

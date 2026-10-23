@@ -16,11 +16,13 @@
 
 ## AI analysis path (project-authorized)
 
-- The ExternalProvider activates on SECURESCAN_AI_KEY. The legitimate free
-  path: Akash creates a Gemini API key in his own Google AI Studio FOR THIS
-  PROJECT (free tier exists per ai.google.dev/gemini-api/docs/billing) and
-  sets it as SECURESCAN_AI_KEY. Reusing keys created for other past projects
-  is not assumed; a fresh project-scoped key keeps audit clean.
+- The ExternalProvider activates on SECURESCAN_AI_KEY. DONE Oct 23 2026:
+  a project-dedicated Gemini API key was created in the GCP project
+  "SecureScan" (ID level-unfolding-424707-v5, free tier, no billing account
+  linked) and stored in the Instinct vault (never in chat or the repo). The
+  provider model is gemini-3.1-flash-lite (heavier models timed out on the
+  free tier; retired models were replaced). One real redacted-finding call
+  verified end-to-end. The key never enters the repo or logs.
 - Scanned content is untrusted input; before any external AI call, evidence
   is redacted (already enforced in findings) and instructions in scanned
   content are never obeyed (spec section 12).

@@ -27,7 +27,7 @@ class ExternalProvider:
     name = "external-ai"
     is_ai = True
     ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/models/"
-                "gemini-2.0-flash:generateContent")
+                "gemini-3.1-flash-lite:generateContent")
 
     def __init__(self, key=None, opener=None):
         self.key = key or os.environ.get("SECURESCAN_AI_KEY")
