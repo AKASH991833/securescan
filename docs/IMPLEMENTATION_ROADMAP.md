@@ -7,9 +7,12 @@ DONE: Background job queue + cancellation (in-process JobManager).
 DONE: Auth + tenant isolation (argon2, org scoping, cross-tenant 404s) - local.
 DONE: DNS TXT verification via dnspython (no dig dependency).
 DONE: Retest/compare across scans.
-1. Retest UI surface (compare endpoint/page; function + test exist).
-2. Persistent session secret management for any shared deployment.
-3. More adapters ONLY if they can run pinned (subprocess DNS rule).
-4. GitHub publication - requires explicit grant for THIS project +
-   sanitization review before pushing.
+DONE: Retest comparison UI on scan page; job progress/cancel UI.
+DONE: Shared-deploy mode (SECURESCAN_DEPLOY=shared): stable secret required,
+Secure cookies. Still not publicly deployed.
+1. Rate limiting on scan creation itself (abuse control) for shared deploys.
+2. More adapters ONLY if they can run pinned (subprocess DNS rule).
+3. GitHub publication - grant evidence recovered (Oct 7 verbatim exchange);
+   main to confirm scope for THIS project + sanitization review.
+4. Hosted deployment: research done - see DEPLOYMENT_NOTES.md.
 5. Multi-worker deployment (Redis/Celery) only when real deployment decided.

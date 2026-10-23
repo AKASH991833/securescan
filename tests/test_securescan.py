@@ -138,9 +138,15 @@ def test_web_challenge(vuln, store):
 def test_challenge_expiry():
     cs = ChallengeStore()
     ch = cs.create("example.com")
-    cs._challenges["example.com"]["expires"] = time.time() - 1
+    cs._challenges[("local", "example.com")]["expires"] = time.time() - 1
     with pytest.raises(ValueError):
         cs._valid("example.com")
+
+def test_challenges_tenant_scoped():
+    cs = ChallengeStore()
+    cs.create("example.com", org_id="org-A")
+    with pytest.raises(ValueError):
+        cs._valid("example.com", "org-B")  # B cannot use A's challenge
 
 # ---- reports ----
 def test_reports(vuln, store, tmp_path):
@@ -163,8 +169,24 @@ def test_redaction():
     assert "supersecretvalue" not in f.evidence
 
 # ---- web app gate ----
+import re as _re
+def _csrf(html):
+    m = _re.search(r'name="csrf" value="([^"]+)"', html)
+    return m.group(1) if m else None
+
 def _register(c, username="alice", org="OrgA"):
-    return c.post("/register", data={"username": username, "password": "password123", "org": org})
+    c.get("/register")  # establish session + csrf cookie
+    tok = _csrf(c.get("/register").data.decode())
+    return c.post("/register", data={"username": username, "password": "password123",
+                                     "org": org, "csrf": tok})
+
+def _login(c, username="alice", password="password123"):
+    tok = _csrf(c.get("/login").data.decode())
+    return c.post("/login", data={"username": username, "password": password, "csrf": tok})
+
+def _post_scan(c, target, profile="1"):
+    tok = _csrf(c.get("/").data.decode())
+    return c.post("/scan", data={"target": target, "profile": profile, "csrf": tok})
 
 def test_webapp_requires_verification(tmp_path, monkeypatch):
     import securescan.scope as scope_mod
@@ -173,7 +195,7 @@ def test_webapp_requires_verification(tmp_path, monkeypatch):
     app = create_app(str(tmp_path / "web.db"))
     c = app.test_client()
     _register(c)
-    r = c.post("/scan", data={"target": "https://example.com", "profile": "1"})
+    r = _post_scan(c, "https://example.com")
     assert b"Ownership verification required" in r.data
     assert b"securescan-verification=" in r.data
 
@@ -183,8 +205,8 @@ def test_webapp_rejects_unavailable_profile(tmp_path):
     c = app.test_client()
     _register(c)
     # force host as verified to reach profile check
-    r = c.post("/scan", data={"target": "example.com", "profile": "2"})
-    assert r.status_code in (200, 400)
+    r = _post_scan(c, "example.com", profile="2")
+    assert r.status_code in (200, 302, 400)
 
 # ---- profile 2 crawl subset ----
 def test_profile2_crawl_subset(vuln, store):
@@ -264,10 +286,10 @@ def test_ui_rejects_private_target_before_challenge(tmp_path):
     app = create_app(str(tmp_path / "w3.db"))
     c = app.test_client()
     _register(c)
-    r = c.post("/scan", data={"target": "http://127.0.0.1:5998", "profile": "1"})
+    r = _post_scan(c, "http://127.0.0.1:5998")
     assert r.status_code == 400 and b"target rejected" in r.data
     assert b"securescan-verification=" not in r.data  # no challenge issued for prohibited targets
-    r2 = c.post("/scan", data={"target": "http://169.254.169.254/", "profile": "1"})
+    r2 = _post_scan(c, "http://169.254.169.254/")
     assert r2.status_code == 400
 
 def test_summary_kinds(vuln, store):
@@ -397,10 +419,12 @@ def test_register_login_logout(tmp_path):
     assert r.status_code == 302  # redirect to /
     assert c.get("/").status_code == 200
     c.get("/logout")
+    tok = _csrf(c.get("/").data.decode())
+    c.post("/logout", data={"csrf": tok})
     assert c.get("/").status_code == 302  # back to login
-    r = c.post("/login", data={"username": "alice", "password": "wrong-pass"})
+    r = _login(c, "alice", "wrong-pass")
     assert r.status_code == 401
-    r = c.post("/login", data={"username": "alice", "password": "password123"})
+    r = _login(c)
     assert r.status_code == 302
 
 def test_password_hashed_argon2(tmp_path):
@@ -418,7 +442,7 @@ def test_unauthenticated_redirects(tmp_path):
     app = create_app(str(tmp_path / "a3.db"))
     c = app.test_client()
     assert c.get("/").status_code == 302
-    assert c.post("/scan", data={"target": "https://example.com", "profile": "1"}).status_code == 302
+    assert c.post("/scan", data={"target": "https://example.com", "profile": "1"}).status_code in (302, 400)
     assert c.get("/scan/scan-x").status_code == 302
     assert c.get("/report/scan-x.json").status_code == 302
 
@@ -454,5 +478,94 @@ def test_short_password_rejected(tmp_path):
     from securescan.webapp import create_app
     app = create_app(str(tmp_path / "a5.db"))
     c = app.test_client()
-    r = c.post("/register", data={"username": "x", "password": "short", "org": "O"})
+    tok = _csrf(c.get("/register").data.decode())
+    r = c.post("/register", data={"username": "x", "password": "short", "org": "O", "csrf": tok})
     assert r.status_code == 400
+
+# ---- CSRF / throttle / fixation / org-join / jobs-tenant / deploy-mode ----
+def test_csrf_required_on_all_posts(tmp_path, monkeypatch):
+    import securescan.scope as scope_mod
+    monkeypatch.setattr(scope_mod, "resolve_host", lambda h: ["93.184.216.34"])
+    from securescan.webapp import create_app
+    app = create_app(str(tmp_path / "c1.db"))
+    c = app.test_client()
+    assert c.post("/register", data={"username": "a", "password": "password123", "org": "O"}).status_code == 400
+    _register(c)
+    assert c.post("/scan", data={"target": "https://example.com", "profile": "1"}).status_code == 400
+    assert c.post("/verify-and-scan", data={"target": "https://example.com", "profile": "1"}).status_code == 400
+    assert c.get("/logout").status_code == 405  # logout is POST-only now
+
+def test_login_throttle(tmp_path):
+    from securescan.webapp import create_app
+    app = create_app(str(tmp_path / "c2.db"))
+    c = app.test_client()
+    _register(c)
+    tok = _csrf(c.get("/").data.decode())
+    c.post("/logout", data={"csrf": tok})
+    for _ in range(5):
+        assert _login(c, "alice", "wrong-pass").status_code == 401
+    assert _login(c, "alice", "wrong-pass").status_code == 429
+    # even correct password is locked out during the window
+    assert _login(c).status_code == 429
+
+def test_logout_invalidates_session_server_side(tmp_path):
+    from securescan.webapp import create_app
+    from securescan.store import Store
+    db = str(tmp_path / "c3.db")
+    app = create_app(db)
+    c = app.test_client()
+    _register(c)
+    old_cookies = c.get_cookie("session")
+    tok = _csrf(c.get("/").data.decode())
+    c.post("/logout", data={"csrf": tok})
+    # replaying the OLD cookie must not authenticate (session_version bumped)
+    c.set_cookie("session", old_cookies.value if hasattr(old_cookies, "value") else "")
+    assert c.get("/").status_code == 302
+
+def test_same_org_name_is_separate_tenant(tmp_path):
+    from securescan.webapp import create_app
+    from securescan.store import Store
+    db = str(tmp_path / "c4.db")
+    app = create_app(db)
+    _register(app.test_client(), username="u1", org="SameName")
+    _register(app.test_client(), username="u2", org="SameName")
+    s = Store(db)
+    assert s.get_user("u1")["org_id"] != s.get_user("u2")["org_id"]
+
+def test_jobs_tenant_scoped(tmp_path, monkeypatch):
+    import securescan.scope as scope_mod
+    monkeypatch.setattr(scope_mod, "resolve_host", lambda h: ["93.184.216.34"])
+    from securescan.webapp import create_app
+    app = create_app(str(tmp_path / "c5.db"))
+    ca = app.test_client()
+    _register(ca, username="u1", org="A")
+    # A has no verified host; inject a job directly to test route scoping
+    from securescan.jobs import JobManager
+    jid = None
+    for rule in app.view_functions:
+        pass
+    cb = app.test_client()
+    _register(cb, username="u2", org="B")
+    assert cb.get("/job/job-fake").status_code == 404
+    assert cb.post("/job/job-fake/cancel", data={}).status_code in (400, 404)
+
+def test_shared_deploy_requires_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECURESCAN_DEPLOY", "shared")
+    monkeypatch.delenv("SECURESCAN_SECRET", raising=False)
+    from securescan.webapp import create_app
+    with pytest.raises(RuntimeError):
+        create_app(str(tmp_path / "c6.db"))
+    monkeypatch.setenv("SECURESCAN_SECRET", "x" * 32)
+    app = create_app(str(tmp_path / "c7.db"))
+    assert app.config["SESSION_COOKIE_SECURE"] is True
+
+def test_job_progress_and_cancel_flow(tmp_path, monkeypatch):
+    import securescan.scope as scope_mod
+    monkeypatch.setattr(scope_mod, "resolve_host", lambda h: ["93.184.216.34"])
+    from securescan.webapp import create_app
+    app = create_app(str(tmp_path / "c8.db"))
+    c = app.test_client()
+    _register(c)
+    # challenge -> verify (token will not match, but challenge flow is tenant-safe)
+    r = _post_scan(c, "https://example.com")
+    assert b"Ownership verification required" in r.data

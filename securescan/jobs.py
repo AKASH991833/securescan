@@ -13,7 +13,7 @@ class JobManager:
     def submit(self, target, profile, allow_private=False, budget=60, org_id="local"):
         jid = "job-" + uuid.uuid4().hex[:10]
         cancel = threading.Event()
-        info = {"id": jid, "target": target, "profile": profile,
+        info = {"id": jid, "target": target, "profile": profile, "org_id": org_id,
                 "status": "queued", "scan_id": None, "cancel": cancel,
                 "created": time.time(), "error": None}
         with self._lock:

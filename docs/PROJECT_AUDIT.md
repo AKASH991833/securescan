@@ -25,13 +25,13 @@ that preserves the concept's visual direction (dark console, English UI).
 | Scan profiles | PARTIAL | P1 passive-only COMPLETE; P2 partial subset COMPLETE (crawl + active path probes + testssl adapter); 3-5 unavailable with reasons |
 | Orchestrator + coverage matrix | COMPLETE | per-check completed/failed/not-tested recorded |
 | Storage (SQLite) | COMPLETE | scans, findings, coverage |
-| Reports (JSON + PDF) | COMPLETE | coverage always included; disclaimer |
+| Reports (JSON + PDF) | COMPLETE | coverage always included; disclaimer; retest comparison (fixed/still-open/new) shown on scan page when a previous scan of the same target exists |
 | Explainer | COMPLETE (not AI) | deterministic templates, labeled not-AI |
 | Web UI (dark console) | COMPLETE (local prototype) | ownership gate enforced before scan |
 | CLI | COMPLETE | |
-| Test suite | COMPLETE | 40 tests, all passing |
-| Auth + tenant isolation | COMPLETE (local) | argon2 hashing, register/login/logout, org-scoped scans/findings, cross-tenant 404s indistinguishable from missing; 6 auth/tenancy tests |
-| Background queue + cancellation | COMPLETE (in-process) | thread-based JobManager, cancel events honored between checks; Redis/Celery only needed for multi-worker deployment |
+| Test suite | COMPLETE | 48 tests, all passing |
+| Auth + tenant isolation | COMPLETE (local) | argon2id, labeled forms, CSRF on every POST (login/register/logout/scan/verify/cancel), login throttling (5 fails/10min -> 5min lockout), session-fixation defense (fresh session pre-auth), server-side logout invalidation (session_version), org join-by-name impossible (always new org id), tenant-scoped challenges/jobs/scans/reports, cross-tenant 404s |
+| Background queue + cancellation | COMPLETE (in-process) | thread-based JobManager, cancel honored between checks, tenant-scoped job progress page with real status (meta-refresh, no fake percentages) and cancel button |
 | Scanner integrations | BLOCKED (by design) | testssl.sh installed but DISABLED: subprocess does its own DNS/networking outside the pinned transport; stays unavailable until pinnable. No subprocess may bypass SSRF defenses |
 | AI provider abstraction | COMPLETE (keyless) | provider interface + template provider active; external provider activates on SECURESCAN_AI_KEY; actual AI still unavailable without user's key |
 | GitHub publication | NOT DONE | requires explicit user grant + sanitization review |

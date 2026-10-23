@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS orgs (
   id TEXT PRIMARY KEY, name TEXT, created_at REAL);
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, username TEXT UNIQUE, pw_hash TEXT, org_id TEXT,
-  created_at REAL);
+  session_version INTEGER DEFAULT 0, created_at REAL);
 CREATE TABLE IF NOT EXISTS scans (
   id TEXT PRIMARY KEY, org_id TEXT, target TEXT, profile INTEGER, status TEXT,
   created_at REAL, finished_at REAL, error TEXT);
@@ -42,9 +42,14 @@ class Store:
     def create_user(self, username, pw_hash, org_id):
         uid = "usr-" + uuid.uuid4().hex[:10]
         with self._conn() as c:
-            c.execute("INSERT INTO users VALUES (?,?,?,?,?)",
-                      (uid, username, pw_hash, org_id, time.time()))
+            c.execute("INSERT INTO users VALUES (?,?,?,?,?,?)",
+                      (uid, username, pw_hash, org_id, 0, time.time()))
         return uid
+
+    def bump_session_version(self, username):
+        with self._conn() as c:
+            c.execute("UPDATE users SET session_version=session_version+1 WHERE username=?",
+                      (username,))
 
     def get_user(self, username):
         with self._conn() as c:

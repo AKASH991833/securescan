@@ -34,8 +34,21 @@
 ## Platform auth and tenancy (local prototype)
 
 - Registration/login/logout with argon2id password hashing (never plaintext).
-- Flask signed-cookie sessions: HttpOnly, SameSite=Lax; secret from
-  SECURESCAN_SECRET env or random per process (sessions reset on restart).
-- Every scan/finding/report query is org-scoped; cross-tenant access returns
-  404, indistinguishable from nonexistent (no existence leak).
+- CSRF tokens required on every state-changing endpoint (login, register,
+  logout, scan, verify-and-scan, job cancel); logout is POST-only.
+- Login brute-force throttling: 5 failures in 10 minutes locks the username
+  for 5 minutes (in-memory; per-process in this prototype).
+- Session-fixation defense: a fresh session is issued before authentication;
+  the CSRF token rotates with it.
+- Server-side session invalidation: each user carries a session_version;
+  logout bumps it, so replayed cookies stop authenticating.
+- Organizations: registration ALWAYS creates a new organization id - an
+  existing org can never be joined by guessing its name.
+- Tenant isolation: every scan/finding/report/job/challenge query is
+  org-scoped; cross-tenant access returns 404, indistinguishable from
+  nonexistent. Ownership challenges and verified-host windows are per-org.
+- Flask signed-cookie sessions: HttpOnly, SameSite=Lax.
+- Shared deployment (NOT enabled by default): SECURESCAN_DEPLOY=shared
+  requires a stable SECURESCAN_SECRET env var (fails fast without it) and
+  sets Secure cookies - deploy behind TLS only.
 - Scans still require ownership verification per host.

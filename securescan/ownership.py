@@ -10,16 +10,22 @@ class ChallengeStore:
     def __init__(self):
         self._challenges = {}
 
-    def create(self, host: str) -> dict:
+    def _key(self, host: str, org_id: str = None):
+        # challenges are tenant-scoped: one org's challenge/verification never
+        # authorizes another org's scan of the same host
+        return (org_id or "local", host)
+
+    def create(self, host: str, org_id: str = None) -> dict:
         token = "securescan-verification=" + secrets.token_urlsafe(32)
-        self._challenges[host] = {"token": token, "expires": time.time() + TOKEN_TTL,
-                                  "used": False, "created": time.time()}
+        self._challenges[self._key(host, org_id)] = {
+            "token": token, "expires": time.time() + TOKEN_TTL,
+            "used": False, "created": time.time()}
         return {"host": host, "token": token, "expires_in": TOKEN_TTL,
                 "web_path": "/.well-known/securescan-verification.txt",
                 "dns_name": f"_securescan.{host}"}
 
-    def _valid(self, host: str) -> dict:
-        ch = self._challenges.get(host)
+    def _valid(self, host: str, org_id: str = None) -> dict:
+        ch = self._challenges.get(self._key(host, org_id))
         if not ch:
             raise ValueError("no challenge for host")
         if ch["used"]:
@@ -28,8 +34,8 @@ class ChallengeStore:
             raise ValueError("challenge expired")
         return ch
 
-    def verify_web(self, host: str, client) -> bool:
-        ch = self._valid(host)
+    def verify_web(self, host: str, client, org_id: str = None) -> bool:
+        ch = self._valid(host, org_id)
         base = getattr(getattr(client, "guard", None), "base", None) or ("https://" + host)
         r = client.get(base + "/.well-known/securescan-verification.txt")
         if r.error or r.status != 200:
@@ -39,12 +45,12 @@ class ChallengeStore:
             return True
         return False
 
-    def verify_dns(self, host: str, resolver=None) -> dict:
+    def verify_dns(self, host: str, resolver=None, org_id: str = None) -> dict:
         """Returns {'verified': bool, 'detail': str}. Uses dnspython (pure
         Python, free); no external dig dependency. `resolver` is injectable
         for tests. Honest about lookup failures."""
         try:
-            ch = self._valid(host)
+            ch = self._valid(host, org_id)
         except ValueError as e:
             return {"verified": False, "detail": str(e)}
         name = f"_securescan.{host}"
