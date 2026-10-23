@@ -3,3 +3,8 @@ __pycache__/
 securescan.db
 *.db
 .env
+
+# local AI key storage (also lives outside the repo)
+.securescan/
+securescan.db
+__pycache__/

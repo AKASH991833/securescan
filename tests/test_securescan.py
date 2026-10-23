@@ -766,3 +766,62 @@ def test_tls_success_path_with_trusted_cert(https_fixture, store, monkeypatch):
     findings = _tls_check_only(f"https://localhost:{https_fixture.port}", store)
     assert any("certificate valid" in f.description.lower() and "negotiated" in f.description.lower()
                for f in findings), [f.description for f in findings]
+
+
+# ---- local key storage (masked-input helper) ----
+SYNTHETIC_KEY = "AQ.synthetic-test-secret-not-a-real-key-000000"
+
+def test_local_key_roundtrip_and_perms(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))  # redirect ~/.securescan
+    import importlib, securescan.local_key as lk
+    importlib.reload(lk)
+    lk.store_key(SYNTHETIC_KEY)
+    assert lk.load_key() == SYNTHETIC_KEY
+    import os, stat
+    mode = stat.S_IMODE(os.stat(lk.STORE_FILE).st_mode)
+    assert mode == 0o600, oct(mode)
+    dmode = stat.S_IMODE(os.stat(lk.STORE_DIR).st_mode)
+    assert dmode & 0o077 == 0, oct(dmode)
+
+def test_local_key_outside_project(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    import importlib, securescan.local_key as lk
+    importlib.reload(lk)
+    import os
+    assert not str(lk.STORE_FILE).startswith(os.getcwd())
+
+def test_local_key_cli_never_prints_secret(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    import importlib, securescan.local_key as lk
+    importlib.reload(lk)
+    import getpass
+    answers = iter([SYNTHETIC_KEY, SYNTHETIC_KEY])
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": next(answers))
+    assert lk.main(["setup"]) == 0
+    lk.main(["status"])
+    out = capsys.readouterr().out
+    assert SYNTHETIC_KEY not in out
+    assert "stored" in out
+
+def test_local_key_clear(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    import importlib, securescan.local_key as lk
+    importlib.reload(lk)
+    lk.store_key(SYNTHETIC_KEY)
+    assert lk.clear_key() is True
+    assert lk.load_key() is None
+    assert lk.key_present() is False
+
+def test_provider_uses_stored_key_and_env_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SECURESCAN_AI_KEY", raising=False)
+    import importlib, securescan.local_key as lk
+    importlib.reload(lk)
+    lk.store_key(SYNTHETIC_KEY)
+    import securescan.ai_provider as ap
+    importlib.reload(ap)
+    p = ap.ExternalProvider()
+    assert p.available and p.key == SYNTHETIC_KEY
+    monkeypatch.setenv("SECURESCAN_AI_KEY", "env-key-wins")
+    p2 = ap.ExternalProvider()
+    assert p2.key == "env-key-wins"

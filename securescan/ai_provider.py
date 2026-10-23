@@ -30,11 +30,20 @@ class ExternalProvider:
                 "gemini-3.1-flash-lite:generateContent")
 
     def __init__(self, key=None, opener=None):
-        self.key = key or os.environ.get("SECURESCAN_AI_KEY")
+        self.key = key or os.environ.get("SECURESCAN_AI_KEY") or self._stored_key()
         self.available = bool(self.key)
         self.opener = opener  # injectable transport for tests
-        self.unavailable_reason = ("No user-supplied key (SECURESCAN_AI_KEY unset). "
-                                   "Free-tier signup (e.g. Gemini) is the documented follow-up.")
+        self.unavailable_reason = ("No user-supplied key (SECURESCAN_AI_KEY unset and no "
+                                   "local key stored via `python -m securescan.local_key setup`). "
+                                   "The template explainer (not AI) is the fallback.")
+
+    @staticmethod
+    def _stored_key():
+        try:
+            from .local_key import load_key
+            return load_key()
+        except Exception:
+            return None
 
     def _sanitize(self, finding: dict) -> dict:
         import re

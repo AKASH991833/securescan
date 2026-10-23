@@ -31,15 +31,17 @@ test. Anything unclear: send Instinct a photo of the window.
 
 ## Optional: real AI explanations
 Without a key, finding explanations come from a built-in local template
-(clearly labeled, not AI). To enable the real AI explainer:
-1. Open https://aistudio.google.com/api-keys (your Google account).
-2. Find the key named "SecureScan project key" and copy it.
-3. Press Win+R, type `cmd`, press Enter, then run (paste your key):
-   setx SECURESCAN_AI_KEY "PASTE_THE_KEY_HERE"
-4. Close ALL SecureScan windows, then start start-securescan.bat again.
-The key stays in your Windows user environment - it is never written into the
-SecureScan folder and never sent anywhere except Google's own API when you run
-an explanation.
+(clearly labeled, NOT AI). To enable the real AI explainer:
+1. Open https://aistudio.google.com/api-keys (your Google account), find the
+   key named "SecureScan project key", and copy it.
+2. Double-click `set-ai-key.bat`. A hidden prompt appears: paste the key
+   (NOTHING shows while you paste - that is normal), press Enter, then paste
+   it once more to confirm.
+3. Close ALL SecureScan windows, then start start-securescan.bat again.
+The key is stored encrypted for YOUR Windows user only (Windows DPAPI), at
+%USERPROFILE%\.securescan\ai.key - OUTSIDE the SecureScan folder, never in
+command history, never shown, never logged. It is sent only to Google's own
+API when you run an explanation. To remove it: `python -m securescan.local_key clear`.
 
 ## If something fails
 - "Python was not found": redo the Python install with the PATH box ticked.
