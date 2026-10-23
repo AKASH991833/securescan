@@ -24,14 +24,14 @@ class ScanContext:
 
 def run_scan(target: str, profile: int, store: Store,
              allow_private: bool = False, budget: int = 60,
-             cancel_event=None) -> dict:
+             cancel_event=None, org_id: str = "local") -> dict:
     """Run a scan. `allow_private` is only for the local test fixture harness;
     the web UI and CLI never set it for user-entered targets."""
     prof = PROFILES.get(profile)
     if not prof or not prof["available"]:
         raise ValueError(f"profile {profile} is not available: "
                          f"{prof['unavailable_reason'] if prof else 'unknown'}")
-    sid = store.create_scan(target, profile)
+    sid = store.create_scan(target, profile, org_id)
     coverage, findings = [], []
     try:
         guard = ScopeGuard(target, allow_private=allow_private)
@@ -71,10 +71,25 @@ def run_scan(target: str, profile: int, store: Store,
             if not p["available"]:
                 coverage.append((f"profile-{pid}", "not-tested",
                                  p["unavailable_reason"]))
-        # dedupe: same check, same asset, same description (crawl overlaps baseline)
+        # dedupe: same asset + same ISSUE across check names (baseline checks
+        # vs crawl page-checks). Issue signatures are semantic for the known
+        # overlapping issue types; otherwise (check_id, title, description) so
+        # distinct findings sharing a check title (e.g. five different missing
+        # headers) are never collapsed.
+        import re as _re
+        def _issue_key(f):
+            d = f.description.lower()
+            if "password form" in d and "http" in d:
+                return (f.asset, "issue:password-form-http")
+            if "csrf" in d:
+                m = _re.search(r"#(\d+)", f.description)
+                return (f.asset, "issue:csrf-form-" + (m.group(1) if m else "?"))
+            if "http subresource" in d:
+                return (f.asset, "issue:mixed-content")
+            return (f.check_id, f.title, f.description)
         seen_keys, unique = set(), []
         for f in findings:
-            key = (f.check_id, f.asset, f.description)
+            key = _issue_key(f)
             if key not in seen_keys:
                 seen_keys.add(key)
                 unique.append(f)

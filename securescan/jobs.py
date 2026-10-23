@@ -10,7 +10,7 @@ class JobManager:
         self.jobs = {}          # job_id -> info dict
         self._lock = threading.Lock()
 
-    def submit(self, target, profile, allow_private=False, budget=60):
+    def submit(self, target, profile, allow_private=False, budget=60, org_id="local"):
         jid = "job-" + uuid.uuid4().hex[:10]
         cancel = threading.Event()
         info = {"id": jid, "target": target, "profile": profile,
@@ -18,19 +18,19 @@ class JobManager:
                 "created": time.time(), "error": None}
         with self._lock:
             self.jobs[jid] = info
-        th = threading.Thread(target=self._run, args=(info, allow_private, budget),
+        th = threading.Thread(target=self._run, args=(info, allow_private, budget, org_id),
                               daemon=True)
         info["thread"] = th
         th.start()
         return jid
 
-    def _run(self, info, allow_private, budget):
+    def _run(self, info, allow_private, budget, org_id="local"):
         from .orchestrator import run_scan
         info["status"] = "running"
         try:
             result = run_scan(info["target"], info["profile"], self.store,
                               allow_private=allow_private, budget=budget,
-                              cancel_event=info["cancel"])
+                              cancel_event=info["cancel"], org_id=org_id)
             info["scan_id"] = result["scan"]["id"]
             info["status"] = ("cancelled" if info["cancel"].is_set()
                               else result["scan"]["status"])

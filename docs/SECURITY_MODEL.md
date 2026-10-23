@@ -30,3 +30,12 @@
   REFLECTED origin with credentials is confirmed. robots.txt/security.txt are
   benign discovery, never findings.
 - Untrusted content: scanned HTML is data; nothing in it is executed or obeyed.
+
+## Platform auth and tenancy (local prototype)
+
+- Registration/login/logout with argon2id password hashing (never plaintext).
+- Flask signed-cookie sessions: HttpOnly, SameSite=Lax; secret from
+  SECURESCAN_SECRET env or random per process (sessions reset on restart).
+- Every scan/finding/report query is org-scoped; cross-tenant access returns
+  404, indistinguishable from nonexistent (no existence leak).
+- Scans still require ownership verification per host.

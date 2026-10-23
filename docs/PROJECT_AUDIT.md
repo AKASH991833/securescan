@@ -12,6 +12,7 @@ that preserves the concept's visual direction (dark console, English UI).
   installed but deliberately DISABLED because subprocess networking would
   bypass the pinned transport. All others absent, detected, reported, never faked.
 - No external AI key available (free tiers need user signup).
+- dnspython 2.8 installed user-space: DNS TXT verification unblocked.
 
 ## Implementation matrix
 | Module | State | Notes |
@@ -28,8 +29,8 @@ that preserves the concept's visual direction (dark console, English UI).
 | Explainer | COMPLETE (not AI) | deterministic templates, labeled not-AI |
 | Web UI (dark console) | COMPLETE (local prototype) | ownership gate enforced before scan |
 | CLI | COMPLETE | |
-| Test suite | COMPLETE | 31 tests, all passing |
-| Auth/multi-user/tenancy | MISSING | needs real deployment decisions |
+| Test suite | COMPLETE | 40 tests, all passing |
+| Auth + tenant isolation | COMPLETE (local) | argon2 hashing, register/login/logout, org-scoped scans/findings, cross-tenant 404s indistinguishable from missing; 6 auth/tenancy tests |
 | Background queue + cancellation | COMPLETE (in-process) | thread-based JobManager, cancel events honored between checks; Redis/Celery only needed for multi-worker deployment |
 | Scanner integrations | BLOCKED (by design) | testssl.sh installed but DISABLED: subprocess does its own DNS/networking outside the pinned transport; stays unavailable until pinnable. No subprocess may bypass SSRF defenses |
 | AI provider abstraction | COMPLETE (keyless) | provider interface + template provider active; external provider activates on SECURESCAN_AI_KEY; actual AI still unavailable without user's key |

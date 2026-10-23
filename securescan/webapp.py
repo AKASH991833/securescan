@@ -1,8 +1,11 @@
 """Dark-console web UI (English). Local prototype: synchronous scans against
 targets the operator is authorized to test. allow_private is NOT set here, so
 user-entered targets can never hit localhost/private addresses."""
+import functools, os, secrets
 from urllib.parse import urlparse
-from flask import Flask, request, render_template_string, abort
+from flask import Flask, request, render_template_string, abort, session, redirect
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 from .store import Store
 from .orchestrator import run_scan
 from .profiles import PROFILES, external_tools_status
@@ -46,6 +49,7 @@ a{color:#58a6ff} pre{white-space:pre-wrap;font-size:.75rem;color:#9fb8a4;margin:
 }
 </style></head><body>
 <h1>SECURESCAN</h1>
+{% if session.get("user") %}<small>signed in as {{ session.get("user") }} - <a href="/logout">logout</a></small><br>{% endif %}
 <span class="demo">LOCAL PROTOTYPE - profile 1 (passive) + profile 2 subset (crawl, path probes) implemented; testssl adapter DISABLED (subprocess would bypass SSRF guard); profiles 3-5 unavailable</span>
 <div class="panel">
 <form method="post" action="/scan" class="scanform">
@@ -108,13 +112,98 @@ a{color:#58a6ff} pre{white-space:pre-wrap;font-size:.75rem;color:#9fb8a4;margin:
 <br><small>Missing tools are reported, never faked. Profiles depending on them stay unavailable.</small></div>
 </body></html>"""
 
-def create_app(db_path="securescan.db"):
+
+AUTH_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8"><title>SecureScan - {{mode}}</title>
+<style>
+body{background:#0b0f14;color:#c9e4ca;font-family:ui-monospace,monospace;margin:0;padding:2rem;max-width:420px;margin:0 auto}
+h1{color:#39d353}input,button{display:block;width:100%;box-sizing:border-box;background:#0e151c;color:#c9e4ca;border:1px solid #2ea043;border-radius:6px;padding:.6rem;margin:.4rem 0;font-family:inherit}
+button{background:#12351c;cursor:pointer}.failed{background:#5c1d3a;color:#ffb3d9;padding:.2rem .6rem;border-radius:4px}
+a{color:#58a6ff}</style></head><body>
+<h1>SECURESCAN</h1><h2>{{mode}}</h2>
+{% if auth_error %}<p class="failed">{{ auth_error }}</p>{% endif %}
+<form method="post">
+<input name="username" placeholder="username" required autocomplete="username">
+<input name="password" type="password" placeholder="password" required autocomplete="current-password">
+{% if mode == 'Register' %}<input name="org" placeholder="organization name" required>{% endif %}
+<button type="submit">{{mode}}</button>
+</form>
+{% if mode == 'Login' %}<p><a href="/register">Need an account? Register</a></p>
+{% else %}<p><a href="/login">Have an account? Login</a></p>{% endif %}
+</body></html>"""
+
+def create_app(db_path="securescan.db", secret_key=None):
     app = Flask(__name__)
+    # session signing key: env override or random per process (documented:
+    # random key means sessions reset on restart - fine for local prototype)
+    app.secret_key = secret_key or os.environ.get("SECURESCAN_SECRET") or secrets.token_hex(32)
+    app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
     store = Store(db_path)
+    ph = PasswordHasher()
     challenges = ChallengeStore()
     verified_hosts = {}  # host -> expiry timestamp
 
-    def render(result=None):
+    def current_user():
+        uname = session.get("user")
+        return store.get_user(uname) if uname else None
+
+    def login_required(fn):
+        @functools.wraps(fn)
+        def wrapper(*a, **kw):
+            if not current_user():
+                return redirect("/login")
+            return fn(*a, **kw)
+        return wrapper
+
+    @app.get("/register")
+    def register_form():
+        return render_template_string(AUTH_TEMPLATE, mode="Register", auth_error=None)
+
+    @app.post("/register")
+    def register():
+        uname = request.form.get("username", "").strip()
+        pw = request.form.get("password", "")
+        org = request.form.get("org", "").strip()
+        if not uname or not pw or not org:
+            return render_template_string(AUTH_TEMPLATE, mode="Register",
+                                          auth_error="all fields required"), 400
+        if len(pw) < 8:
+            return render_template_string(AUTH_TEMPLATE, mode="Register",
+                                          auth_error="password must be at least 8 characters"), 400
+        if store.get_user(uname):
+            return render_template_string(AUTH_TEMPLATE, mode="Register",
+                                          auth_error="username taken"), 400
+        oid = store.create_org(org)
+        store.create_user(uname, ph.hash(pw), oid)
+        session["user"] = uname
+        return redirect("/")
+
+    @app.get("/login")
+    def login_form():
+        return render_template_string(AUTH_TEMPLATE, mode="Login", auth_error=None)
+
+    @app.post("/login")
+    def login():
+        uname = request.form.get("username", "").strip()
+        pw = request.form.get("password", "")
+        u = store.get_user(uname)
+        ok = False
+        if u:
+            try:
+                ok = ph.verify(u["pw_hash"], pw)
+            except VerifyMismatchError:
+                ok = False
+        if not ok:
+            return render_template_string(AUTH_TEMPLATE, mode="Login",
+                                          auth_error="invalid credentials"), 401
+        session["user"] = uname
+        return redirect("/")
+
+    @app.get("/logout")
+    def logout():
+        session.clear()
+        return redirect("/login")
+
+    def render(result=None, org_id=None):
         summary = {"confirmed": 0, "potential": 0, "inconclusive": 0, "not_detected": 0,
                    "vulnerabilities_confirmed": 0, "hardening": 0, "observations": 0}
         if result:
@@ -130,27 +219,31 @@ def create_app(db_path="securescan.db"):
                 elif f["status"] == "confirmed":
                     summary["vulnerabilities_confirmed"] += 1
         return render_template_string(PAGE, result=result, summary=summary,
-                                      scans=store.list_scans(), profiles=PROFILES,
+                                      scans=store.list_scans(org_id=org_id),
+                                      profiles=PROFILES,
                                       tools=external_tools_status(),
                                       challenge=None, target=None, profile=None,
                                       verify_error=None)
 
     @app.get("/")
+    @login_required
     def index():
-        return render()
+        return render(org_id=current_user()["org_id"])
 
     import time as _time
 
-    def _render_challenge(challenge, target, profile, verify_error=None):
+    def _render_challenge(challenge, target, profile, verify_error=None, org_id=None):
         summary = {"confirmed": 0, "potential": 0, "inconclusive": 0, "not_detected": 0}
         return render_template_string(PAGE, result=None, summary=summary,
-                                      scans=store.list_scans(), profiles=PROFILES,
+                                      scans=store.list_scans(org_id=org_id), profiles=PROFILES,
                                       tools=external_tools_status(),
                                       challenge=challenge, target=target,
                                       profile=profile, verify_error=verify_error)
 
     @app.post("/scan")
+    @login_required
     def scan():
+        org_id = current_user()["org_id"]
         target = request.form.get("target", "")
         profile = int(request.form.get("profile", "1"))
         try:
@@ -161,15 +254,17 @@ def create_app(db_path="securescan.db"):
         except ScopeError as e:
             abort(400, f"target rejected: {e}")
         if verified_hosts.get(host, 0) < _time.time():
-            return _render_challenge(challenges.create(host), target, profile)
+            return _render_challenge(challenges.create(host), target, profile, org_id=org_id)
         try:
-            result = run_scan(target, profile, store)  # allow_private defaults False
+            result = run_scan(target, profile, store, org_id=org_id)
         except ValueError as e:
             abort(400, str(e))
-        return render(result)
+        return render(result, org_id=org_id)
 
     @app.post("/verify-and-scan")
+    @login_required
     def verify_and_scan():
+        org_id = current_user()["org_id"]
         target = request.form.get("target", "")
         profile = int(request.form.get("profile", "1"))
         try:
@@ -188,18 +283,28 @@ def create_app(db_path="securescan.db"):
         if not ok:
             ch = challenges._challenges.get(host)
             return _render_challenge(ch, target, profile,
-                                     verify_error=err or "token not found at the challenge path")
+                                     verify_error=err or "token not found at the challenge path",
+                                     org_id=org_id)
         verified_hosts[host] = _time.time() + 3600
-        result = run_scan(target, profile, store)
-        return render(result)
+        result = run_scan(target, profile, store, org_id=org_id)
+        return render(result, org_id=org_id)
 
     @app.get("/scan/<sid>")
+    @login_required
     def show(sid):
-        return render(store.get_scan(sid))
+        org_id = current_user()["org_id"]
+        result = store.get_scan(sid, org_id=org_id)
+        if not result["scan"]:
+            abort(404)  # cross-tenant access is indistinguishable from nonexistent
+        return render(result, org_id=org_id)
 
     @app.get("/report/<sid>.json")
+    @login_required
     def report_json(sid):
-        return build_json(store.get_scan(sid))
+        result = store.get_scan(sid, org_id=current_user()["org_id"])
+        if not result["scan"]:
+            abort(404)
+        return build_json(result)
     return app
 
 if __name__ == "__main__":

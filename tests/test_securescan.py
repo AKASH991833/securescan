@@ -163,12 +163,16 @@ def test_redaction():
     assert "supersecretvalue" not in f.evidence
 
 # ---- web app gate ----
+def _register(c, username="alice", org="OrgA"):
+    return c.post("/register", data={"username": username, "password": "password123", "org": org})
+
 def test_webapp_requires_verification(tmp_path, monkeypatch):
     import securescan.scope as scope_mod
     monkeypatch.setattr(scope_mod, "resolve_host", lambda h: ["93.184.216.34"])
     from securescan.webapp import create_app
     app = create_app(str(tmp_path / "web.db"))
     c = app.test_client()
+    _register(c)
     r = c.post("/scan", data={"target": "https://example.com", "profile": "1"})
     assert b"Ownership verification required" in r.data
     assert b"securescan-verification=" in r.data
@@ -177,6 +181,7 @@ def test_webapp_rejects_unavailable_profile(tmp_path):
     from securescan.webapp import create_app
     app = create_app(str(tmp_path / "web2.db"))
     c = app.test_client()
+    _register(c)
     # force host as verified to reach profile check
     r = c.post("/scan", data={"target": "example.com", "profile": "2"})
     assert r.status_code in (200, 400)
@@ -258,6 +263,7 @@ def test_ui_rejects_private_target_before_challenge(tmp_path):
     from securescan.webapp import create_app
     app = create_app(str(tmp_path / "w3.db"))
     c = app.test_client()
+    _register(c)
     r = c.post("/scan", data={"target": "http://127.0.0.1:5998", "profile": "1"})
     assert r.status_code == 400 and b"target rejected" in r.data
     assert b"securescan-verification=" not in r.data  # no challenge issued for prohibited targets
@@ -325,3 +331,128 @@ def test_retest_compare(vuln, store):
     cmp_ = compare_scans(r1, r2)
     assert not cmp_["new"] and not cmp_["fixed"]
     assert len(cmp_["still_open"]) > 0
+
+# ---- DNS TXT via dnspython ----
+def test_dns_txt_verification():
+    from securescan.ownership import ChallengeStore
+    cs = ChallengeStore()
+    ch = cs.create("example.com")
+    class FakeAnswer:
+        strings = [ch["token"].encode()]
+    class FakeResolver:
+        def resolve(self, name, rtype, lifetime=10):
+            assert name == "_securescan.example.com" and rtype == "TXT"
+            return [FakeAnswer()]
+    res = cs.verify_dns("example.com", resolver=FakeResolver())
+    assert res["verified"] is True
+    # replay protection
+    res2 = cs.verify_dns("example.com", resolver=FakeResolver())
+    assert res2["verified"] is False
+
+def test_dns_txt_no_match():
+    from securescan.ownership import ChallengeStore
+    cs = ChallengeStore()
+    cs.create("example.com")
+    class FakeAnswer:
+        strings = [b"some-other-token"]
+    class FakeResolver:
+        def resolve(self, name, rtype, lifetime=10):
+            return [FakeAnswer()]
+    res = cs.verify_dns("example.com", resolver=FakeResolver())
+    assert res["verified"] is False and "not found" in res["detail"]
+
+def test_dns_txt_lookup_failure():
+    from securescan.ownership import ChallengeStore
+    cs = ChallengeStore()
+    cs.create("nx.example")
+    class FailResolver:
+        def resolve(self, name, rtype, lifetime=10):
+            raise Exception("NXDOMAIN")
+    res = cs.verify_dns("nx.example", resolver=FailResolver())
+    assert res["verified"] is False and "failed" in res["detail"]
+
+# ---- cross-check dedupe ----
+def test_dedupe_across_check_names(vuln, store):
+    res = run_scan(vuln.url, 2, store, allow_private=True)
+    # exact duplicates never survive
+    triples = [(f["check_id"], f["asset"], f["title"], f["description"]) for f in res["findings"]]
+    assert len(triples) == len(set(triples))
+    # cross-check semantic dupes collapse: no crawl copy of the same CSRF form
+    csrf = [f for f in res["findings"] if "csrf" in f["description"].lower() and "form #1" in f["description"].lower()]
+    assert len([f for f in csrf if f["asset"].endswith("/")]) == 1
+    # same password-form issue not double-reported by baseline + crawl
+    pw = [f for f in res["findings"] if "password form" in f["description"].lower()]
+    assert len(pw) == 1 and pw[0]["status"] == "confirmed"
+    # distinct same-title findings (5 missing headers) are NOT collapsed
+    hdr = [f for f in res["findings"] if f["check_id"] == "security-headers"]
+    assert len(hdr) >= 4
+
+
+# ---- auth + tenant isolation ----
+def test_register_login_logout(tmp_path):
+    from securescan.webapp import create_app
+    app = create_app(str(tmp_path / "a1.db"))
+    c = app.test_client()
+    r = _register(c)
+    assert r.status_code == 302  # redirect to /
+    assert c.get("/").status_code == 200
+    c.get("/logout")
+    assert c.get("/").status_code == 302  # back to login
+    r = c.post("/login", data={"username": "alice", "password": "wrong-pass"})
+    assert r.status_code == 401
+    r = c.post("/login", data={"username": "alice", "password": "password123"})
+    assert r.status_code == 302
+
+def test_password_hashed_argon2(tmp_path):
+    from securescan.webapp import create_app
+    from securescan.store import Store
+    db = str(tmp_path / "a2.db")
+    app = create_app(db)
+    _register(app.test_client())
+    u = Store(db).get_user("alice")
+    assert u["pw_hash"].startswith("$argon2")
+    assert "password123" not in u["pw_hash"]
+
+def test_unauthenticated_redirects(tmp_path):
+    from securescan.webapp import create_app
+    app = create_app(str(tmp_path / "a3.db"))
+    c = app.test_client()
+    assert c.get("/").status_code == 302
+    assert c.post("/scan", data={"target": "https://example.com", "profile": "1"}).status_code == 302
+    assert c.get("/scan/scan-x").status_code == 302
+    assert c.get("/report/scan-x.json").status_code == 302
+
+def test_tenant_isolation(tmp_path, vuln):
+    from securescan.webapp import create_app
+    from securescan.store import Store
+    from securescan.orchestrator import run_scan as rs
+    db = str(tmp_path / "a4.db")
+    app = create_app(db)
+    # org A scans directly via orchestrator with its org_id
+    store = Store(db)
+    ra = rs(vuln.url, 1, store, allow_private=True, org_id="org-A")
+    sid_a = ra["scan"]["id"]
+    # user B in org B
+    cb = app.test_client()
+    _register(cb, username="bob", org="OrgB")
+    assert cb.get(f"/scan/{sid_a}").status_code == 404        # invisible cross-tenant
+    assert cb.get(f"/report/{sid_a}.json").status_code == 404
+    # B's history contains no org-A scans
+    r = cb.get("/")
+    assert sid_a.encode() not in r.data
+    # user A can see their own scan
+    ca = app.test_client()
+    _register(ca, username="alice2", org="OrgA")
+    # alice2's org id differs from "org-A" literal used above, so still 404:
+    assert ca.get(f"/scan/{sid_a}").status_code == 404
+    # but a scan created through A's own session path is visible
+    ra2 = rs(vuln.url, 1, store, allow_private=True,
+             org_id=store.get_user("alice2")["org_id"])
+    assert ca.get(f"/scan/{ra2['scan']['id']}").status_code == 200
+
+def test_short_password_rejected(tmp_path):
+    from securescan.webapp import create_app
+    app = create_app(str(tmp_path / "a5.db"))
+    c = app.test_client()
+    r = c.post("/register", data={"username": "x", "password": "short", "org": "O"})
+    assert r.status_code == 400

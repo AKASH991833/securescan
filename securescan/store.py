@@ -4,8 +4,13 @@ import json, sqlite3, time, uuid
 from pathlib import Path
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS orgs (
+  id TEXT PRIMARY KEY, name TEXT, created_at REAL);
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY, username TEXT UNIQUE, pw_hash TEXT, org_id TEXT,
+  created_at REAL);
 CREATE TABLE IF NOT EXISTS scans (
-  id TEXT PRIMARY KEY, target TEXT, profile INTEGER, status TEXT,
+  id TEXT PRIMARY KEY, org_id TEXT, target TEXT, profile INTEGER, status TEXT,
   created_at REAL, finished_at REAL, error TEXT);
 CREATE TABLE IF NOT EXISTS findings (
   id TEXT PRIMARY KEY, scan_id TEXT, check_id TEXT, title TEXT, category TEXT,
@@ -28,11 +33,30 @@ class Store:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def create_scan(self, target, profile):
+    def create_org(self, name):
+        oid = "org-" + uuid.uuid4().hex[:10]
+        with self._conn() as c:
+            c.execute("INSERT INTO orgs VALUES (?,?,?)", (oid, name, time.time()))
+        return oid
+
+    def create_user(self, username, pw_hash, org_id):
+        uid = "usr-" + uuid.uuid4().hex[:10]
+        with self._conn() as c:
+            c.execute("INSERT INTO users VALUES (?,?,?,?,?)",
+                      (uid, username, pw_hash, org_id, time.time()))
+        return uid
+
+    def get_user(self, username):
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM users WHERE username=?",
+                          (username,)).fetchone()
+        return dict(r) if r else None
+
+    def create_scan(self, target, profile, org_id="local"):
         sid = "scan-" + uuid.uuid4().hex[:12]
         with self._conn() as c:
-            c.execute("INSERT INTO scans VALUES (?,?,?,?,?,?,?)",
-                      (sid, target, profile, "queued", time.time(), None, None))
+            c.execute("INSERT INTO scans VALUES (?,?,?,?,?,?,?,?)",
+                      (sid, org_id, target, profile, "queued", time.time(), None, None))
         return sid
 
     def finish_scan(self, sid, status="complete", error=None):
@@ -56,9 +80,15 @@ class Store:
                 c.execute("INSERT OR REPLACE INTO coverage VALUES (?,?,?,?)",
                           (sid, check_id, state, detail))
 
-    def get_scan(self, sid):
+    def get_scan(self, sid, org_id=None):
+        """Tenant-scoped: org_id given -> returns empty result for other
+        tenants' scans (indistinguishable from nonexistent)."""
         with self._conn() as c:
-            scan = c.execute("SELECT * FROM scans WHERE id=?", (sid,)).fetchone()
+            if org_id is not None:
+                scan = c.execute("SELECT * FROM scans WHERE id=? AND org_id=?",
+                                 (sid, org_id)).fetchone()
+            else:
+                scan = c.execute("SELECT * FROM scans WHERE id=?", (sid,)).fetchone()
             findings = [dict(r) for r in c.execute(
                 "SELECT * FROM findings WHERE scan_id=? ORDER BY first_seen", (sid,))]
             cov = [dict(r) for r in c.execute(
@@ -71,7 +101,11 @@ class Store:
                 "SELECT * FROM scans WHERE target=? ORDER BY created_at DESC LIMIT ?",
                 (target, n))]
 
-    def list_scans(self):
+    def list_scans(self, org_id=None):
         with self._conn() as c:
+            if org_id is not None:
+                return [dict(r) for r in c.execute(
+                    "SELECT * FROM scans WHERE org_id=? ORDER BY created_at DESC LIMIT 50",
+                    (org_id,))]
             return [dict(r) for r in c.execute(
                 "SELECT * FROM scans ORDER BY created_at DESC LIMIT 50")]
