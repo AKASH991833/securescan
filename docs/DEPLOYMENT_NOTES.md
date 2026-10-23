@@ -31,19 +31,22 @@ A free hosted deployment is possible via Render free tier with real
 limitations (cold starts, ephemeral DB, not-for-production terms). The safe
 local prototype remains the primary verified artifact until Akash chooses.
 
-## Persistent free DB research (2026-10-23)
+## Persistent free DB research (2026-10-23) - CANDIDATE, NOT SOLVED
 
-- **Turso** (turso.tech/pricing): free tier, "no credit card required", and it
-  IS SQLite-compatible - matches the current storage layer with the least
-  migration. This makes a Render-free-web-service + Turso combination the
-  only verified no-card hosted path found so far: durable DB survives
-  Render's ephemeral disk, unrestricted egress for scanning stays on Render.
-  Real limits remain: cold starts, Render's not-for-production terms, Turso
-  free quotas. NOT provisioned - deploying the unfinished scanner publicly is
-  deliberately out of scope.
+- **Turso** (turso.tech/pricing): free tier, "no credit card required", and
+  markets SQLite compatibility. STATUS: researched candidate only. No adapter
+  code exists, no migration or integration test has been run, and marketing
+  compatibility does not establish drop-in Python sqlite3 compatibility or
+  behavior under Render's ephemeral disk. Treating durability as unsolved
+  until a tested adapter exists.
 - **Supabase free**: Postgres, pauses projects after 7 days of low activity
   (supabase.com/docs/guides/platform/free-project-pausing); would require
   porting the storage layer off SQLite.
-- Job queue on a hosted deploy: durable job records already survive restarts
-  (interrupted-marking), so Render restarts lose only in-flight progress, not
-  history. A multi-worker Redis/Celery setup stays a later decision.
+- Job queue: durable job records survive LOCAL restarts (interrupted-
+  marking). On Render they survive only if the DB is durable, which depends
+  on the unverified Turso path above.
+- Provider policy (render.com/docs/penetration-testing): Render permits
+  testing of the customer's OWN services; testing other Render users' infra
+  needs consent; DoS testing forbidden. A multi-tenant scanner probing
+  arbitrary external hosts from Render IPs is NOT explicitly covered - it is
+  a gray area needing Render confirmation before any hosted demo.
